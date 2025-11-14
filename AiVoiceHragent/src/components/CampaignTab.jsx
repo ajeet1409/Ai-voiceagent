@@ -1,7 +1,7 @@
 /**
  * CampaignTab Component
  * 
- * Handles bulk campaign functionality:
+ * Handles bulk campaign functionality:h
  * - CSV file upload for multiple candidates
  * - Campaign name input
  * - Create campaign button

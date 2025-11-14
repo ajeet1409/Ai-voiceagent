@@ -351,83 +351,6 @@ export default function VapiVoiceCaller() {
     }
   };
 
-  /**
-   * Try bulk call creation (attempts to create all calls at once)
-   * Uses OmniDim bulk_call/create API with concurrent_call_limit: 1 for sequential calls
-   */
-  const tryBulkCreate = async (campaignName, customers) => {
-    // Build contact list in OmniDim format
-    const contactList = customers.map((c, idx) => {
-      const phoneNumber = normalizePhone(c.phone || c.number || c.phone_number || c["phone number"] || "");
-
-      // Build contact object with all CSV data
-      const contact = {
-        phone_number: phoneNumber,
-        call_number: `${idx + 1}/${customers.length}`,
-        campaign_name: campaignName
-      };
-
-      // Add all other CSV fields to the contact
-      Object.keys(c).forEach(key => {
-        if (key !== 'phone' && key !== 'number' && key !== 'phone_number' && c[key]) {
-          contact[key] = c[key];
-        }
-      });
-
-      return contact;
-    });
-
-    // Filter out invalid phone numbers
-    const validContacts = contactList.filter(c => c.phone_number && c.phone_number !== "+");
-
-    if (validContacts.length === 0) {
-      throw new Error("No valid phone numbers for bulk create.");
-    }
-
-    console.log('📞 Bulk call payload:', {
-      name: campaignName,
-      contact_count: validContacts.length,
-      concurrent_call_limit: 1
-    });
-
-    const resp = await fetch(`${BACKEND_URL}/calls/bulk_call/create`, {
-      method: "POST",
-      headers: {
-        "Authorization": `Bearer ${API_TOKEN}`,
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({
-        agent_id: AGENT_ID,
-        name: campaignName,
-        contact_list: validContacts,
-        phone_number_id: FROM_NUMBER_ID,
-        is_scheduled: false,
-        retry_config: {
-          auto_retry: true,
-          auto_retry_schedule: "scheduled_time",
-          retry_schedule_days: 3,
-          retry_schedule_hours: 0,
-          retry_limit: 3
-        },
-        enabled_reschedule_call: true,
-        concurrent_call_limit: 1  // KEY: This makes calls sequential (one at a time)
-      })
-    });
-
-    if (!resp.ok) {
-      const body = await resp.json().catch(() => null);
-      console.error('❌ Bulk create failed:', body);
-      const message = body?.message || body?.error || `Bulk create failed with status ${resp.status}`;
-      console.error('❌ Bulk create error:', body);
-      const err = new Error(message);
-      err.response = body;
-      throw err;
-    }
-
-    const result = await resp.json();
-    console.log('✅ Bulk create response:', result);
-    return result;
-  };
 
   /**
    * Dispatch a single call
@@ -481,6 +404,23 @@ export default function VapiVoiceCaller() {
     }
     return resp.json();
   };
+
+  // Explicitly tell backend to release the agent lock once a call is finished
+  const releaseAgentLockBackend = async () => {
+    try {
+      await fetch(`${BACKEND_URL}/agent/release`, {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${API_TOKEN}`,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({ agent_id: AGENT_ID })
+      });
+    } catch (e) {
+      console.warn("⚠️ Failed to release backend agent lock:", e.message);
+    }
+  };
+
 
   /**
    * Resolve call log ID by checking recent call logs for the target number
@@ -757,40 +697,11 @@ export default function VapiVoiceCaller() {
 
       setProgress({ current: 0, total: customers.length });
 
-      // DISABLE bulk create - use one-by-one approach for true sequential calling
-      const USE_BULK = false;  // Set to true to try bulk API first
-
-      console.log(`🔧 DEBUG: USE_BULK = ${USE_BULK}`);
-      console.log(`🔧 DEBUG: Will use ${USE_BULK ? 'BULK API' : 'ONE-BY-ONE'} approach`);
-
-      if (USE_BULK) {
-        try {
-          console.log(`📞 Attempting bulk create for campaign "${campaignName}" with ${customers.length} calls`);
-          const bulkResp = await tryBulkCreate(campaignName, customers);
-
-          summary.successful = customers.length;
-          summary.failed = 0;
-          summary.results = customers.map((c, idx) => ({
-            index: idx + 1,
-            phone: normalizePhone(c.phone),
-            status: "bulk_created",
-            data: bulkResp?.calls?.[idx] ?? null
-          }));
-
-          toast.success(`✅ Bulk created ${summary.successful} calls for campaign "${campaignName}"`);
-          console.log("✅ Bulk response:", bulkResp);
-        } catch (bulkError) {
-          console.warn("⚠️ Bulk create failed, falling back to single-call creation. Reason:", bulkError);
-          toast.info("Bulk create unavailable, creating calls one-by-one...");
-        }
-      }
-
       // ONE-BY-ONE approach: Each call waits for previous to complete
-        const DELAY_AFTER_DISCONNECT_MS = 3000; // wait 3s after a call finishes before starting next
+      const DELAY_AFTER_DISCONNECT_MS = 3000; // wait 3s after a call finishes before starting next
 
-      if (!USE_BULK) {
-        console.log(`📞 Starting campaign "${campaignName}" with ${customers.length} calls (ONE-BY-ONE mode)`);
-        toast.info(`Starting campaign with ${customers.length} calls - calling one by one...`);
+      console.log(`📞 Starting campaign "${campaignName}" with ${customers.length} calls (ONE-BY-ONE mode)`);
+      toast.info(`Starting campaign with ${customers.length} calls - calling one by one...`);
 
         for (let i = 0; i < customers.length; i++) {
           const customer = customers[i];
@@ -847,6 +758,9 @@ export default function VapiVoiceCaller() {
                   data: completedCallData
                 });
 
+                // Tell backend it's safe to release the agent lock for this call
+                await releaseAgentLockBackend();
+
                 console.log(`⏳ [${idxLabel}] Waiting ${DELAY_AFTER_DISCONNECT_MS/1000}s after disconnect before next call...`);
                 await new Promise(res => setTimeout(res, DELAY_AFTER_DISCONNECT_MS));
               } else {
@@ -861,6 +775,9 @@ export default function VapiVoiceCaller() {
                   status: "unknown",
                   data
                 });
+
+                // Best-effort: ask backend to release the agent lock so the next call can proceed
+                await releaseAgentLockBackend();
               }
             } else {
               // As a safety, wait a bit to avoid immediate overlap if no ID could be resolved
@@ -868,6 +785,9 @@ export default function VapiVoiceCaller() {
               await new Promise(res => setTimeout(res, 30000));
               summary.successful++;
               summary.results.push({ index: i + 1, phone: phoneNormalized, status: "no_id", data });
+
+              // Also ask backend to release the lock in this no-id edge case
+              await releaseAgentLockBackend();
             }
 
           } catch (err) {

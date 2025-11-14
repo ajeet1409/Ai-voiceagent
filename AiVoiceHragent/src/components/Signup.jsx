@@ -28,6 +28,11 @@ const Signup = () => {
         }
       });
       console.log(response.data);
+      if (response.status === 400) {
+        toast.error("User already exist");
+        setIsLoading(false);
+        return;
+      }
 
       if (response.status === 201) {
         localStorage.setItem('token', response?.data?.token);
@@ -80,8 +85,8 @@ const Signup = () => {
       {/* Animated Background */}
       <AnimatedBackground canvasRef={canvasRef} styles={styles} />
 
-      
-      
+
+
 
       {/* Signup Form Container */}
       <div className="relative z-10 w-full max-w-md px-6">

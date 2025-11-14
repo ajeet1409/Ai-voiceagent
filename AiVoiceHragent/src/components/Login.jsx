@@ -23,6 +23,12 @@ const Login = () => {
         password
       });
 
+      if(response.status===400){
+        toast.error("Invalid email or password || user not register" );
+        setIsLoading(false);
+        return;
+      }
+
       console.log(response);
 
       if (response.status === 201) {
@@ -37,6 +43,7 @@ const Login = () => {
         setIsLoading(false)
       }
     } catch (error) {
+      
       console.log("Something went wrong", error.message);
       toast.error(error.response?.data?.message || "Login failed. Please try again.");
     } finally {

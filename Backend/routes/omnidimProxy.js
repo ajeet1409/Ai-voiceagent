@@ -196,6 +196,8 @@ router.post('/calls/dispatch', async (req, res) => {
       }
     );
 
+    console.log('✅ Call dispatched successfully:', response.data);
+
     // Start watcher to release lock when the call finishes
     const callLogId = response.data?.call_log_id || response.data?.id || response.data?.call_id;
     if (callLogId) {
@@ -203,12 +205,12 @@ router.post('/calls/dispatch', async (req, res) => {
     } else {
       // If we cannot determine the id, schedule an automatic release after 30s to avoid deadlock
       const existingLock = agentLocks.get(agentKey) || {};
-      const timer = setTimeout(() => releaseAgentLock(agentKey, 'no_id_auto_release'), 30_000);
+      const timer = setTimeout(() => releaseAgentLock(agentKey, 'no_id_auto_release'), 3000);
       agentLocks.set(agentKey, { ...existingLock, timer });
-      console.warn(`⚠️ No call_log_id from dispatch. Will auto-release agent ${agentKey} lock in 30s.`);
+      console.warn(`⚠️ No call_log_id from dispatch. Will auto-release agent ${agentKey} lock in 3s.`);
     }
 
-    res.json(response.data);
+   return res.json(response.data);
   } catch (error) {
     console.error('Error dispatching call:', error.response?.data || error.message);
     res.status(error.response?.status || 500).json({
@@ -218,53 +220,6 @@ router.post('/calls/dispatch', async (req, res) => {
   }
 });
 
-// Bulk call creation
-router.post('/calls/bulk_call/create', async (req, res) => {
-  try {
-    const { agent_id, name, contact_list, phone_number_id, is_scheduled, retry_config, enabled_reschedule_call, concurrent_call_limit } = req.body;
-    const token = req.headers.authorization?.split(' ')[1];
-
-    if (!token) {
-      return res.status(401).json({ error: 'No authorization token provided' });
-    }
-
-    console.log('📞 Proxying bulk call creation:', {
-      agent_id,
-      name,
-      contact_count: contact_list?.length,
-      concurrent_call_limit
-    });
-
-    const response = await axios.post(
-      `${OMNIDIM_BASE_URL}/calls/bulk_call/create`,
-      {
-        agent_id,
-        name,
-        contact_list,
-        phone_number_id,
-        is_scheduled,
-        retry_config,
-        enabled_reschedule_call,
-        concurrent_call_limit
-      },
-      {
-        headers: {
-          'Authorization': `Bearer ${token}`,
-          'Content-Type': 'application/json'
-        }
-      }
-    );
-
-    console.log('✅ Bulk call created successfully');
-    return res.json(response.data);
-  } catch (error) {
-    console.error('❌ Error creating bulk call:', error.response?.data || error.message);
-    res.status(error.response?.status || 500).json({
-      error: error.response?.data?.message || error.response?.data?.error || error.message,
-      details: error.response?.data
-    });
-  }
-});
 
 
 
@@ -362,6 +317,15 @@ router.get('/call/logs', async (req, res) => {
       details: error.response?.data
     });
   }
+});
+
+
+// Allow frontend to explicitly release an agent lock once it knows a call is finished
+router.post('/agent/release', (req, res) => {
+  const { agent_id } = req.body || {};
+  const agentKey = String(agent_id || 'default');
+  releaseAgentLock(agentKey, 'frontend_release');
+  return res.json({ ok: true, agent_id: agentKey });
 });
 
 

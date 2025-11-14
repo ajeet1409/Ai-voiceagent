@@ -9,7 +9,7 @@ export const signup = async (req, res) => {
 
   if (user) {
     console.log(user);
-    return res.json({ message: "user already exist" });
+    return res.status(400).json({ message: "user already exist" });
   }
 
   // bcrypt.genSalt(10, (err, salt) => {
@@ -59,12 +59,12 @@ export const login = async (req, res) => {
   
    const user = await userModel.findOne({ email });
   if (!user) {
-    return res.json({ message: "user not register" });
+    return res.status(400).json({ message: "user not register" });
   }
 
   const isMatch = await bcrypt.compare(password, user.password);
   if (!isMatch) {
-    return res.json({ message: "invalid password or email" });
+    return res.status(400).json({ message: "invalid password or email" });
   }
 
   const token = jwt.sign({ email, id: user._id }, "secret", {
